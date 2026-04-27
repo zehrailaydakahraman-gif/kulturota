@@ -1,396 +1,464 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import L from 'leaflet';
 import Papa from 'papaparse';
-import { ArrowLeft, Loader2, Sun, Moon } from 'lucide-react';
+import { ArrowLeft, Loader2, Sun, Moon, LocateFixed, Trash2 } from 'lucide-react';
 import { useTheme } from '../hooks/useTheme';
+import { ISTANBUL_COORDS } from '../data/locations';
+import { geocodeAddress, sleep } from '../utils/geocoding';
+import { getMarkerIcon } from '../utils/mapIcons';
+import { getCachedPlaces, setCachedPlaces, clearCache } from '../utils/cache';
+import MapFilter from '../components/MapFilter';
+import ErrorState from '../components/ErrorState';
+import type { Place, FilterType, RawPlaceRow } from '../types';
 
-// Leaflet varsayılan ikon yollarını düzeltme
-delete (L.Icon.Default.prototype as any)._getIconUrl;
-L.Icon.Default.mergeOptions({
-    iconRetinaUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',
-    iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
-    shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
-});
-
-const istanbulCoords: [number, number] = [41.0082, 28.9784];
-
-const knownLocations: Record<string, {lat: number, lon: number}> = {
-    // ... bilinen lokasyonlar (önceki veriler aynı şablonda korunacak ama yer israfı olmasın diye burada)
-    "Anadolu Hisarı Müzesi": {lat: 41.0822, lon: 29.0673},
-    "Artİstanbul Feshane": {lat: 41.0461, lon: 28.9351},
-    "Aşiyan Müzesi": {lat: 41.0815, lon: 29.0555},
-    "Atatürk Müzesi": {lat: 41.0581, lon: 28.9873},
-    "Bakırköy Sanat": {lat: 40.9785, lon: 28.8752},
-    "Baruthane Müze": {lat: 40.9754, lon: 28.8606},
-    "Bebek Sarnıcı Sanat Galerisi": {lat: 41.0772, lon: 29.0436},
-    "Bulgur Palas Müzesi": {lat: 41.0086, lon: 28.9458},
-    "Casa Botter Sanat Galerisi": {lat: 41.0286, lon: 28.9747},
-    "Cendere Sanat Müzesi": {lat: 41.0984, lon: 28.9756},
-    "Cumhuriyet Müzesi": {lat: 41.0369, lon: 28.9850},
-    "Çocuk Bilim Merkezi": {lat: 40.9933, lon: 29.0444},
-    "Doğa  ve Bilim Müzesi": {lat: 41.1089, lon: 29.0800},
-    "Dijital Sanatlar Müzesi": {lat: 41.1089, lon: 29.0800},
-    "Gülhane Sarnıcı": {lat: 41.0122, lon: 28.9814},
-    "Habitat Sanat": {lat: 41.0600, lon: 28.9878},
-    "Haliç Sanat 1": {lat: 41.0250, lon: 28.9500},
-    "Haliç Sanat 2": {lat: 41.0255, lon: 28.9510},
-    "Haliç Sanat 3": {lat: 41.0260, lon: 28.9520},
-    "İBB Belgradkapı Kara Surları Ziyaretçi Merkezi": {lat: 41.0000, lon: 28.9222},
-    "İBB Mevlanakapı Kara Surları Ziyaretçi Merkezi": {lat: 41.0056, lon: 28.9250},
-    "İklim Müzesi": {lat: 40.9935, lon: 29.0446},
-    "İstanbul Tasarım Müzesi": {lat: 41.0167, lon: 28.9667},
-    "İstanbul Sanat Müzesi": {lat: 41.0283, lon: 28.9731},
-    "İtfaiye Müzesi": {lat: 41.0458, lon: 29.0083},
-    "Kağıthane Sanat": {lat: 41.0833, lon: 28.9667},
-    "Karikatür ve Mizah Müzesi": {lat: 40.9931, lon: 29.0442},
-    "Kemal Sunal Müzesi": {lat: 40.9722, lon: 29.0556},
-    "Maltepe Sanat": {lat: 40.9222, lon: 29.1333},
-    "Mecidiyeköy Sanat Galerisi": {lat: 41.0667, lon: 28.9917},
-    "Saraçhane Sergi Salonu": {lat: 41.0144, lon: 28.9536},
-    "Taş Mektep Müze": {lat: 40.8667, lon: 29.1167},
-    "Tekfur Sarayı Müzesi": {lat: 41.0333, lon: 28.9389},
-    "Yerebatan Sarnıcı Müzesi": {lat: 41.0083, lon: 28.9783},
-    
-    // Kütüphaneler
-    "Atatürk Kitaplığı (Merkez Kütüphane)": { lat: 41.032768, lon: 28.967636 },
-    "Kadın Eserleri Kütüphanesi": { lat: 41.004513, lon: 28.977416 },
-    "Barış Manço Kütüphanesi": { lat: 41.044314, lon: 28.881740 },
-    "Eyüp Sultan Kütüphanesi": { lat: 41.048497, lon: 28.929621 },
-    "Ahmet Süheyl Ünver Kütüphanesi": { lat: 41.022894, lon: 29.096939 },
-    "Osman Nuri Ergin Kütüphanesi": { lat: 41.017126, lon: 28.863581 },
-    "İdris Güllüce Kütüphanesi": { lat: 40.822930, lon: 29.308048 },
-    "Muallim Cevdet Kütüphanesi": { lat: 40.892193, lon: 29.182453 },
-    "Halil İnalcık Kütüphanesi": { lat: 40.879727, lon: 29.188465 },
-    "Sesli Kütüphane": { lat: 41.049842, lon: 28.929592 },
-    "Erdem Bayazıt Kütüphanesi": { lat: 41.039739, lon: 28.925979 },
-    "Metin And Kütüphanesi": { lat: 40.956662, lon: 28.816111 },
-    "Ahmet Kabaklı Kütüphanesi": { lat: 41.001619, lon: 28.966412 },
-    "Rasim Özdenören Kütüphanesi": { lat: 41.113366, lon: 28.803734 },
-    "Okçular Tekkesi Kütüphanesi": { lat: 41.031376, lon: 28.982186 },
-    "Fatma Aliye Kütüphanesi": { lat: 41.034690, lon: 29.164200 },
-    "Nasrettin Hoca Çocuk Kütüphanesi": { lat: 41.037876, lon: 28.853657 },
-    "Hacı Bektaşi Veli Kütüphanesi": { lat: 41.114278, lon: 28.867096 },
-    "İlhan Varank Kütüphanesi": { lat: 40.972130, lon: 29.266092 },
-    "Ayşe Hatun Halk Kütüphanesi": { lat: 41.015735, lon: 28.980523 },
-    "Atatürk Müzesi Kütüphanesi": { lat: 41.061780, lon: 28.990197 },
-    "Afife Batur Kütüphanesi": { lat: 40.999072, lon: 29.017668 },
-    "Ahmed Arif Halk Kütüphanesi": { lat: 41.106896, lon: 28.868200 },
-    "Ödünç Kütüphane": { lat: 41.073445, lon: 28.978007 },
-    "Sezai Karakoç Kütüphanesi": { lat: 41.020844, lon: 28.881035 },
-    "Rıfat Ilgaz Kütüphanesi": { lat: 41.188151, lon: 28.750024 },
-    "Fakir Baykurt Kütüphanesi": { lat: 40.974064, lon: 28.712534 },
-    "Özgen Berkol Doğan Kütüphanesi": { lat: 40.984421, lon: 29.020365 },
-    "Kütüphane Troleybüs": { lat: 41.010976, lon: 28.981392 },
-    "Evliya Çelebi Kütüphanesi": { lat: 41.043878, lon: 28.904689 },
-    "Gülten Akın Kütüphanesi": { lat: 41.041442, lon: 28.670563 },
-    "Peyami Safa Kütüphanesi": { lat: 41.021284, lon: 28.964769 },
-    "Yaşar Kemal Kütüphanesi": { lat: 40.980655, lon: 29.238720 },
-    "Sabahattin Eyüboğlu Kütüphanesi": { lat: 40.977248, lon: 28.717084 },
-    "İPA İstanbul Kitaplığı": { lat: 40.979671, lon: 28.873456 },
-    "Atilla İlhan Kütüphanesi": { lat: 40.994486, lon: 28.774122 }
+// ─── Harita Tema URL'leri ───
+const TILE_URLS = {
+  light: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
+  dark: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
 };
 
-const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+const TILE_ATTRIBUTION = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>';
 
-async function geocodeAddress(name: string, district: string) {
-    if (knownLocations[name]) {
-        return knownLocations[name];
-    }
+const CSV_BASE_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vTFybZkkYn2RsnmFSaNME3WbyJkXoWU54o4hiGKUbMQ6Ijd8m_wO2nK5sRQQnd93XtQS0poQBGBXgGX/pub?output=csv';
 
-    const nameQuery = `${name}, İstanbul`;
-    const districtQuery = `${district}, İstanbul`;
-    
-    const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(nameQuery)}&limit=1`;
-
-    try {
-        const response = await fetch(url, { headers: { 'Accept-Language': 'tr' } });
-        const data = await response.json();
-        
-        if (data && data.length > 0) {
-            return { lat: parseFloat(data[0].lat), lon: parseFloat(data[0].lon) };
-        }
-        
-        await sleep(1000);
-        const fallbackUrl = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(districtQuery)}&limit=1`;
-        const fallbackResponse = await fetch(fallbackUrl, { headers: { 'Accept-Language': 'tr' } });
-        const fallbackData = await fallbackResponse.json();
-        
-        if (fallbackData && fallbackData.length > 0) {
-            const offsetLat = (Math.random() - 0.5) * 0.020;
-            const offsetLon = (Math.random() - 0.5) * 0.020;
-            return { 
-                lat: parseFloat(fallbackData[0].lat) + offsetLat, 
-                lon: parseFloat(fallbackData[0].lon) + offsetLon 
-            };
-        }
-    } catch (error) {
-        console.error("Geocoding hatası:", error);
-    }
-    return null;
+/** YouTube video ID çıkarma */
+function extractYoutubeId(url: string): string | null {
+  const match = url.match(/(?:youtube\.com\/(?:[^/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?/\s]{11})/i);
+  return match ? match[1] : null;
 }
 
-// Müzelere özel harita ikonu (SVG tabanlı)
-const museumIconLight = L.divIcon({
-    html: `<div style="background-color: #4f46e5; color: white; width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; border: 2px solid white; box-shadow: 0 4px 6px rgba(0,0,0,0.2);"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" x2="21" y1="22" y2="22"></line><line x1="6" x2="6" y1="18" y2="11"></line><line x1="10" x2="10" y1="18" y2="11"></line><line x1="14" x2="14" y1="18" y2="11"></line><line x1="18" x2="18" y1="18" y2="11"></line><polygon points="12 2 20 7 4 7"></polygon></svg></div>`,
-    className: 'custom-museum-marker light',
-    iconSize: [32, 32],
-    iconAnchor: [16, 32],
-    popupAnchor: [0, -32],
-    tooltipAnchor: [0, -36]
-});
+/** Popup HTML oluşturma */
+function buildPopupHtml(place: Place): string {
+  let mediaHtml = '';
+  if (place.mediaUrl) {
+    const ytId = extractYoutubeId(place.mediaUrl);
+    if (ytId) {
+      mediaHtml = `<iframe width="100%" height="150" src="https://www.youtube.com/embed/${ytId}" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen style="border-radius:10px;margin-bottom:12px;box-shadow:0 2px 8px rgba(0,0,0,0.1)"></iframe>`;
+    } else {
+      mediaHtml = `<img src="${place.mediaUrl}" alt="${place.name}" style="width:100%;height:140px;object-fit:cover;border-radius:10px;margin-bottom:12px;box-shadow:0 2px 8px rgba(0,0,0,0.1)" referrerPolicy="no-referrer" />`;
+    }
+  }
 
-// Koyu tema pim ikonu (biraz daha farklı çerçeve)
-const museumIconDark = L.divIcon({
-    html: `<div style="background-color: #818cf8; color: #1e1e2f; width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; border: 2px solid #1e1e2f; box-shadow: 0 4px 6px rgba(0,0,0,0.4);"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" x2="21" y1="22" y2="22"></line><line x1="6" x2="6" y1="18" y2="11"></line><line x1="10" x2="10" y1="18" y2="11"></line><line x1="14" x2="14" y1="18" y2="11"></line><line x1="18" x2="18" y1="18" y2="11"></line><polygon points="12 2 20 7 4 7"></polygon></svg></div>`,
-    className: 'custom-museum-marker dark',
-    iconSize: [32, 32],
-    iconAnchor: [16, 32],
-    popupAnchor: [0, -32],
-    tooltipAnchor: [0, -36]
-});
+  return `
+    <div style="font-family:'Inter',system-ui,sans-serif;min-width:260px;color:#1e293b">
+      ${mediaHtml}
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px">
+        <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${place.isLibrary ? '#0d9488' : '#4f46e5'}"></span>
+        <span style="font-size:11px;font-weight:600;color:${place.isLibrary ? '#0d9488' : '#4f46e5'};text-transform:uppercase;letter-spacing:0.5px">${place.isLibrary ? 'Kütüphane' : 'Müze / Mekan'}</span>
+      </div>
+      <h3 style="margin:0 0 10px 0;color:#1e293b;font-size:16px;font-weight:700;line-height:1.3">${place.name}</h3>
+      <div style="display:flex;flex-direction:column;gap:6px;font-size:13px;color:#475569">
+        <div style="display:flex;align-items:flex-start;gap:6px">
+          <span style="flex-shrink:0">📍</span>
+          <span>${place.address}</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px">
+          <span style="flex-shrink:0">📞</span>
+          <span>${place.phone}</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px">
+          <span style="flex-shrink:0">🕐</span>
+          <span>${place.hours}</span>
+        </div>
+      </div>
+    </div>
+  `;
+}
 
-// Kütüphanelere özel ikon (Açık - Turkuaz)
-const libraryIconLight = L.divIcon({
-    html: `<div style="background-color: #0d9488; color: white; width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; border: 2px solid white; box-shadow: 0 4px 6px rgba(0,0,0,0.2);"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"></path><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"></path></svg></div>`,
-    className: 'custom-library-marker light',
-    iconSize: [32, 32],
-    iconAnchor: [16, 32],
-    popupAnchor: [0, -32],
-    tooltipAnchor: [0, -36]
-});
-
-// Kütüphanelere özel ikon (Koyu - Açık Turkuaz)
-const libraryIconDark = L.divIcon({
-    html: `<div style="background-color: #2dd4bf; color: #1e1e2f; width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; border: 2px solid #1e1e2f; box-shadow: 0 4px 6px rgba(0,0,0,0.4);"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"></path><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"></path></svg></div>`,
-    className: 'custom-library-marker dark',
-    iconSize: [32, 32],
-    iconAnchor: [16, 32],
-    popupAnchor: [0, -32],
-    tooltipAnchor: [0, -36]
-});
+/** Tooltip HTML oluşturma */
+function buildTooltipHtml(place: Place): string {
+  return `
+    <div style="text-align:center;font-family:'Inter',system-ui,sans-serif">
+      <strong style="font-size:13px">${place.name}</strong><br/>
+      <span style="font-size:11px;opacity:0.7;display:block;margin:2px 0">${place.isLibrary ? '📚 Kütüphane' : '🏛️ Müze / Mekan'}</span>
+      ${place.district ? `<span style="font-size:11px;opacity:0.6">${place.district}</span>` : ''}
+    </div>
+  `;
+}
 
 export default function MapPage() {
-    const navigate = useNavigate();
-    const mapRef = useRef<HTMLDivElement>(null);
-    const mapInstance = useRef<L.Map | null>(null);
-    const tileLayerRef = useRef<L.TileLayer | null>(null);
-    const markersRef = useRef<L.Marker[]>([]);
-    const [status, setStatus] = useState("Harita Yükleniyor...");
-    const [isLoaded, setIsLoaded] = useState(false);
-    
-    // Tema yönetimi hook'unu içeriye alıyoruz
-    const { isDark, toggleTheme } = useTheme();
+  const navigate = useNavigate();
+  const mapRef = useRef<HTMLDivElement>(null);
+  const mapInstance = useRef<L.Map | null>(null);
+  const tileLayerRef = useRef<L.TileLayer | null>(null);
+  const markersRef = useRef<L.Marker[]>([]);
+  const userMarkerRef = useRef<L.Marker | null>(null);
 
-    // Tema değiştiğinde sadece marker ikonlarını güncelliyoruz (Harita teması sabit kalacak)
-    useEffect(() => {
-        if (tileLayerRef.current) {
-            // Tüm markerların ikonlarını da temaya (ve tiplere) göre güncelle
-            markersRef.current.forEach((marker: any) => {
-                 const isLibrary = marker.options?.isLibrary; // Özel flag
-                 if (isLibrary) {
-                     marker.setIcon(isDark ? libraryIconDark : libraryIconLight);
-                 } else {
-                     marker.setIcon(isDark ? museumIconDark : museumIconLight);
-                 }
-            });
+  const [places, setPlaces] = useState<Place[]>([]);
+  const [status, setStatus] = useState('Harita Yükleniyor...');
+  const [isLoaded, setIsLoaded] = useState(false);
+  const [hasError, setHasError] = useState(false);
+  const [activeFilter, setActiveFilter] = useState<FilterType>('all');
+  const [isLocating, setIsLocating] = useState(false);
+
+  const { isDark, toggleTheme } = useTheme();
+
+  // ─── Tema değiştiğinde harita altlığını ve ikonları güncelle ───
+  useEffect(() => {
+    if (!tileLayerRef.current || !mapInstance.current) return;
+
+    // Harita tile'ını değiştir (Dark Mode desteği)
+    tileLayerRef.current.setUrl(isDark ? TILE_URLS.dark : TILE_URLS.light);
+
+    // Marker ikonlarını güncelle
+    markersRef.current.forEach((marker: any) => {
+      const isLibrary = marker.options?.isLibrary ?? false;
+      marker.setIcon(getMarkerIcon(isDark, isLibrary));
+    });
+  }, [isDark]);
+
+  // ─── Filtre değiştiğinde markerları göster/gizle ───
+  useEffect(() => {
+    if (!mapInstance.current) return;
+
+    markersRef.current.forEach((marker: any) => {
+      const isLibrary = marker.options?.isLibrary ?? false;
+      const shouldShow =
+        activeFilter === 'all' ||
+        (activeFilter === 'library' && isLibrary) ||
+        (activeFilter === 'museum' && !isLibrary);
+
+      if (shouldShow) {
+        if (!mapInstance.current!.hasLayer(marker)) {
+          marker.addTo(mapInstance.current!);
         }
-    }, [isDark]);
+      } else {
+        if (mapInstance.current!.hasLayer(marker)) {
+          mapInstance.current!.removeLayer(marker);
+        }
+      }
+    });
+  }, [activeFilter]);
 
-    useEffect(() => {
-        if (!mapRef.current || mapInstance.current) return;
+  // ─── CSV'den mekan verilerini çözümle ───
+  const parsePlaces = useCallback(async (data: RawPlaceRow[]): Promise<Place[]> => {
+    if (!data || data.length === 0) return [];
 
-        // Initialize map
-        mapInstance.current = L.map(mapRef.current).setView(istanbulCoords, 11);
-        
-        // Sabit olarak CartoDB Voyager teması kullanılıyor
-        const initialTileUrl = 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png';
+    const firstRowKeys = Object.keys(data[0] || {});
+    const nameKey = firstRowKeys.find(k => k.toLowerCase().includes('adı')) || 'Adı';
+    const typeKey = firstRowKeys.find(k => k.toLowerCase().includes('türü')) || 'Mekan Türü';
 
-        tileLayerRef.current = L.tileLayer(initialTileUrl, {
-            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
-            maxZoom: 20
-        }).addTo(mapInstance.current);
+    const validRows = data.filter(row => row[nameKey] && row[nameKey].trim() !== '');
+    const total = validRows.length;
+    const results: Place[] = [];
 
-        let csvUrl = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vTFybZkkYn2RsnmFSaNME3WbyJkXoWU54o4hiGKUbMQ6Ijd8m_wO2nK5sRQQnd93XtQS0poQBGBXgGX/pubhtml';
-        // CSV formatına çevir ve tarayıcının eski veriyi hatırlamasını (cache) engellemek için zaman damgası ekle
-        csvUrl = csvUrl.replace('/pubhtml', '/pub?output=csv') + '&t=' + new Date().getTime();
+    for (let i = 0; i < validRows.length; i++) {
+      const row = validRows[i];
+      const name = row[nameKey];
+      const district = row['İlçe Adı'] || '';
+      const type = row[typeKey] || '';
 
-        setStatus("Veriler İndiriliyor...");
+      const place: Place = {
+        name,
+        district,
+        address: row['Adres'] || district,
+        phone: row['Telefon'] || 'Belirtilmemiş',
+        hours: row['Çalışma Saatleri'] || 'Belirtilmemiş',
+        mediaUrl: row['Medya'] || '',
+        type,
+        isLibrary: type.toLowerCase().includes('kütüphane'),
+        coords: null,
+      };
 
-        Papa.parse(csvUrl, {
-            download: true,
-            header: true,
-            complete: async function(results) {
-                const data = results.data as any[];
-                if (!data || data.length === 0) return;
+      // Geocode
+      const coords = await geocodeAddress(name, district);
+      place.coords = coords;
+      results.push(place);
 
-                // Dinamik kolon isimleri bulma ("Adı" veya "Müze Adı", "Mekan Türü", vb.)
-                const firstRowKeys = Object.keys(data[0] || {});
-                const nameKey = firstRowKeys.find(k => k.toLowerCase().includes('adı')) || 'Adı';
-                const typeKey = firstRowKeys.find(k => k.toLowerCase().includes('türü')) || 'Mekan Türü';
-                
-                let targetData = data.filter(row => row[nameKey] && row[nameKey].trim() !== '');
+      setStatus(`Harita Hazırlanıyor... (${i + 1}/${total})`);
 
-                let loadedCount = 0;
-                const total = targetData.length;
-                
-                for (const row of targetData) {
-                    const name = row[nameKey];
-                    const district = row['İlçe Adı'] || '';
-                    const address = row['Adres'] || district;
-                    const phone = row['Telefon'] || 'Belirtilmemiş';
-                    const hours = row['Çalışma Saatleri'] || 'Belirtilmemiş';
-                    const mediaUrl = row['Medya'] || ''; // Medya sütunundan (görsel veya video) linki alıyoruz
-                    const type = row[typeKey] || ''; // Tür bilgisi
+      // Nominatim Rate Limit (sadece bilinmeyen lokasyonlar için)
+      if (!coords || !(await isKnown(name))) {
+        await sleep(1100);
+      }
+    }
 
-                    // Türüne göre sembol seçimi
-                    const isLibrary = type.toLowerCase().includes('kütüphane');
-                    const markerIcon = isLibrary 
-                        ? (document.documentElement.classList.contains('dark') ? libraryIconDark : libraryIconLight)
-                        : (document.documentElement.classList.contains('dark') ? museumIconDark : museumIconLight);
+    return results;
+  }, []);
 
-                    const coords = await geocodeAddress(name, district);
-                    
-                    if (coords && mapInstance.current) {
-                        let mediaHtml = '';
-                        if (mediaUrl) {
-                            // YouTube linki kontrolü
-                            const ytRegex = /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/i;
-                            const ytMatch = mediaUrl.match(ytRegex);
-                            
-                            if (ytMatch && ytMatch[1]) {
-                                // YouTube Iframe
-                                const videoId = ytMatch[1];
-                                mediaHtml = `<iframe width="100%" height="150" src="https://www.youtube.com/embed/${videoId}" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen style="border-radius: 8px; margin-bottom: 12px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);"></iframe>`;
-                            } else {
-                                // Standart Resim
-                                mediaHtml = `<img src="${mediaUrl}" alt="${name}" style="width: 100%; height: 140px; object-fit: cover; border-radius: 8px; margin-bottom: 12px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);" referrerPolicy="no-referrer" />`;
-                            }
-                        }
+  // ─── Haritaya markerları ekle ───
+  const addMarkersToMap = useCallback((placesData: Place[]) => {
+    if (!mapInstance.current) return;
 
-                        // Popup tasarımını isDark state'ine dinamik kalması karmaşık olduğu için native css ile koyu temaya duyarlı sınıf bazlı veya inline style ile yapacağız
-                        // Burada standart bir beyaz popup bırakabiliriz (Leaflet popupları genelde beyazdır, dark mode CSS ile ezilebilir).
-                        const popupHtml = `
-                            <div style="font-family: sans-serif; min-width: 260px; color: #1e293b;">
-                                ${mediaHtml}
-                                <h3 style="margin: 0 0 8px 0; color: #4f46e5; border-bottom: 1px solid #e5e7eb; padding-bottom: 4px; font-size: 16px;">${name}</h3>
-                                <p style="margin: 6px 0; font-size: 13px;"><strong>Adres:</strong> ${address}</p>
-                                <p style="margin: 6px 0; font-size: 13px;"><strong>Telefon:</strong> ${phone}</p>
-                                <p style="margin: 6px 0; font-size: 13px;"><strong>Saatler:</strong> ${hours}</p>
-                            </div>
-                        `;
+    // Eski markerları temizle
+    markersRef.current.forEach(m => {
+      if (mapInstance.current!.hasLayer(m)) {
+        mapInstance.current!.removeLayer(m);
+      }
+    });
+    markersRef.current = [];
 
-                        const tooltipHtml = `
-                            <div style="text-align: center; font-family: sans-serif;">
-                                <strong>${name}</strong><br>
-                                <span style="font-size: 11px; opacity: 0.8; display: block; margin-bottom: 2px;">${isLibrary ? 'Kütüphane' : 'Müze / Mekan'}</span>
-                                ${district}<br>
-                                ${hours !== 'Belirtilmemiş' ? hours : ''}
-                            </div>
-                        `;
-                        
-                        const marker = L.marker([coords.lat, coords.lon], { 
-                            icon: markerIcon,
-                            isLibrary: isLibrary // Özel flag ekledik
-                        } as any)
-                            .bindTooltip(tooltipHtml, { direction: 'top', offset: [0, -10] })
-                            .bindPopup(popupHtml);
-                            
-                        markersRef.current.push(marker);
-                    }
-                    
-                    loadedCount++;
-                    setStatus(`Harita Hazırlanıyor... (${loadedCount}/${total})`);
-                    
-                    if (!knownLocations[name]) {
-                        await sleep(1100);
-                    }
-                }
-                
-                if (mapInstance.current) {
-                    const group = L.featureGroup(markersRef.current).addTo(mapInstance.current);
-                    if (markersRef.current.length > 0) {
-                        mapInstance.current.fitBounds(group.getBounds(), { padding: [30, 30] });
-                    }
-                }
-                
-                setStatus("Yükleme Tamamlandı");
-                setIsLoaded(true);
-            },
-            error: function(error) {
-                console.error("CSV okuma hatası:", error);
-                setStatus("Veri Çekme Hatası!");
-            }
+    const currentIsDark = document.documentElement.classList.contains('dark');
+
+    placesData.forEach(place => {
+      if (!place.coords || !mapInstance.current) return;
+
+      const icon = getMarkerIcon(currentIsDark, place.isLibrary);
+
+      const marker = L.marker([place.coords.lat, place.coords.lon], {
+        icon,
+        isLibrary: place.isLibrary,
+      } as any)
+        .bindTooltip(buildTooltipHtml(place), { direction: 'top', offset: [0, -10] })
+        .bindPopup(buildPopupHtml(place), { maxWidth: 320 });
+
+      markersRef.current.push(marker);
+    });
+
+    // Tümünü haritaya ekle
+    const group = L.featureGroup(markersRef.current).addTo(mapInstance.current);
+    if (markersRef.current.length > 0) {
+      mapInstance.current.fitBounds(group.getBounds(), { padding: [30, 30] });
+    }
+  }, []);
+
+  // ─── Harita başlatma ve veri yükleme ───
+  useEffect(() => {
+    if (!mapRef.current || mapInstance.current) return;
+
+    // Haritayı oluştur
+    mapInstance.current = L.map(mapRef.current).setView(ISTANBUL_COORDS, 11);
+
+    const initialUrl = isDark ? TILE_URLS.dark : TILE_URLS.light;
+    tileLayerRef.current = L.tileLayer(initialUrl, {
+      attribution: TILE_ATTRIBUTION,
+      maxZoom: 20,
+    }).addTo(mapInstance.current);
+
+    // Önce cache'e bak
+    const cached = getCachedPlaces();
+    if (cached && cached.length > 0) {
+      setPlaces(cached);
+      addMarkersToMap(cached);
+      setStatus('Yükleme Tamamlandı (Önbellekten)');
+      setIsLoaded(true);
+      return;
+    }
+
+    // Cache yoksa CSV'den çek
+    setStatus('Veriler İndiriliyor...');
+    const csvUrl = CSV_BASE_URL + '&t=' + Date.now();
+
+    Papa.parse(csvUrl, {
+      download: true,
+      header: true,
+      complete: async function (results) {
+        try {
+          const parsed = await parsePlaces(results.data as RawPlaceRow[]);
+          setPlaces(parsed);
+          addMarkersToMap(parsed);
+          setCachedPlaces(parsed);
+          setStatus('Yükleme Tamamlandı');
+          setIsLoaded(true);
+        } catch (err) {
+          console.error('Veri işleme hatası:', err);
+          setHasError(true);
+          setStatus('Hata!');
+        }
+      },
+      error: function (error) {
+        console.error('CSV okuma hatası:', error);
+        setHasError(true);
+        setStatus('Veri Çekme Hatası!');
+      },
+    });
+
+    return () => {
+      if (mapInstance.current) {
+        mapInstance.current.remove();
+        mapInstance.current = null;
+      }
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ─── Kullanıcı Konumu ───
+  const handleLocate = useCallback(() => {
+    if (!mapInstance.current || !navigator.geolocation) return;
+
+    setIsLocating(true);
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const { latitude, longitude } = position.coords;
+        const latlng: [number, number] = [latitude, longitude];
+
+        if (userMarkerRef.current) {
+          mapInstance.current!.removeLayer(userMarkerRef.current);
+        }
+
+        const userIcon = L.divIcon({
+          html: `<div style="width:20px;height:20px;background:#3b82f6;border:3px solid white;border-radius:50%;box-shadow:0 0 0 4px rgba(59,130,246,0.3),0 2px 8px rgba(0,0,0,0.2)"></div>`,
+          className: 'user-location-marker',
+          iconSize: [20, 20],
+          iconAnchor: [10, 10],
         });
 
-        return () => {
-            if (mapInstance.current) {
-                mapInstance.current.remove();
-                mapInstance.current = null;
-            }
-        };
-    }, []); // isDark array'de yok, sadece init
+        userMarkerRef.current = L.marker(latlng, { icon: userIcon })
+          .addTo(mapInstance.current!)
+          .bindTooltip('Konumunuz', { direction: 'top', offset: [0, -14] });
 
-    return (
-        <div className="flex flex-col h-screen w-full bg-slate-50 dark:bg-slate-950 transition-colors duration-500">
-            {/* Header */}
-            <header className="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-4 py-3 flex items-center justify-between shadow-sm z-[1000] relative transition-colors duration-500">
-                <div className="flex items-center gap-4">
-                    <button 
-                        onClick={() => navigate('/')}
-                        className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full transition-colors text-slate-600 dark:text-slate-300"
-                        title="Ana Sayfaya Dön"
-                    >
-                        <ArrowLeft className="w-5 h-5" />
-                    </button>
-                    <h1 className="text-lg font-bold text-slate-800 dark:text-slate-100 m-0">İstanbul Kültür Haritası</h1>
-                </div>
-
-                <div className="flex items-center gap-4">
-                    {!isLoaded ? (
-                        <div className="flex items-center gap-2 bg-amber-50 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400 px-3 py-1.5 rounded-full text-sm font-medium border border-amber-200 dark:border-amber-800 transition-colors">
-                            <Loader2 className="w-4 h-4 animate-spin" />
-                            <span className="hidden sm:inline">{status}</span>
-                        </div>
-                    ) : (
-                       <div className="text-sm font-medium text-slate-500 dark:text-slate-400 hidden sm:block">
-                          {markersRef.current.length} Mekan Listelendi
-                       </div>
-                    )}
-                    
-                    {/* Harita Tema Değiştirici */}
-                    <button 
-                        onClick={toggleTheme}
-                        className="p-2 ml-2 rounded-full bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 transition-all border border-transparent dark:border-white/10"
-                        title={isDark ? "Açık Tema (Alidade Smooth)" : "Koyu Tema (Alidade Smooth Dark)"}
-                    >
-                        {isDark ? <Sun className="w-5 h-5 text-amber-400" /> : <Moon className="w-5 h-5 text-indigo-600" />}
-                    </button>
-                </div>
-            </header>
-
-            {/* Map Container */}
-            <div className="flex-1 w-full relative z-0">
-                <div ref={mapRef} className="absolute inset-0 w-full h-full" />
-            </div>
-            
-            {/* Global Popup CSS ezilmeleri (Harici CSS dosyasıyla uğraşmadan dark mode desteği) */}
-            <style>{`
-               .dark .leaflet-popup-content-wrapper,
-               .dark .leaflet-popup-tip,
-               .dark .leaflet-tooltip {
-                   background: #1e293b;
-                   color: #f8fafc;
-                   border-color: #334155;
-               }
-               .dark .leaflet-popup-content h3 {
-                   color: #818cf8 !important;
-                   border-bottom-color: #334155 !important;
-               }
-               .dark .leaflet-popup-content p, .dark .leaflet-popup-content strong {
-                   color: #cbd5e1 !important;
-               }
-            `}</style>
-        </div>
+        mapInstance.current!.flyTo(latlng, 14, { duration: 1.5 });
+        setIsLocating(false);
+      },
+      (error) => {
+        console.error('Konum hatası:', error);
+        setIsLocating(false);
+        alert('Konum alınamadı. Lütfen tarayıcı izinlerini kontrol edin.');
+      },
+      { enableHighAccuracy: true, timeout: 10000 }
     );
+  }, []);
+
+  // ─── Yeniden Yükleme (Hata sonrası) ───
+  const handleRetry = useCallback(() => {
+    clearCache();
+    window.location.reload();
+  }, []);
+
+  // ─── Sayaçlar ───
+  const counts = {
+    all: places.filter(p => p.coords).length,
+    museum: places.filter(p => p.coords && !p.isLibrary).length,
+    library: places.filter(p => p.coords && p.isLibrary).length,
+  };
+
+  return (
+    <div className="flex flex-col h-screen w-full bg-slate-50 dark:bg-slate-950 transition-colors duration-500">
+      {/* ─── Header ─── */}
+      <header className="bg-white/80 dark:bg-slate-900/80 backdrop-blur-xl border-b border-slate-200/60 dark:border-slate-800/60 px-4 py-3 flex items-center justify-between shadow-sm z-[1000] relative transition-colors duration-500">
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => navigate('/')}
+            className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl transition-colors text-slate-600 dark:text-slate-300"
+            title="Ana Sayfaya Dön"
+          >
+            <ArrowLeft className="w-5 h-5" />
+          </button>
+          <div>
+            <h1 className="text-lg font-bold text-slate-800 dark:text-slate-100 m-0 leading-tight">
+              İstanbul Kültür Haritası
+            </h1>
+            <p className="text-xs text-slate-500 dark:text-slate-400 m-0 hidden sm:block">
+              Müzeler ve Kütüphaneler
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2">
+          {/* Durum */}
+          {!isLoaded ? (
+            <div className="flex items-center gap-2 bg-amber-50 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400 px-3 py-1.5 rounded-full text-sm font-medium border border-amber-200 dark:border-amber-800 transition-colors">
+              <Loader2 className="w-4 h-4 animate-spin" />
+              <span className="hidden sm:inline">{status}</span>
+            </div>
+          ) : (
+            <div className="text-sm font-medium text-slate-500 dark:text-slate-400 hidden sm:block">
+              {counts.all} Mekan Listelendi
+            </div>
+          )}
+
+          {/* Beni Bul */}
+          <button
+            onClick={handleLocate}
+            disabled={isLocating}
+            className="p-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-blue-100 dark:hover:bg-blue-900/50 text-slate-600 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 transition-all border border-transparent dark:border-white/5"
+            title="Konumumu Göster"
+          >
+            <LocateFixed className={`w-5 h-5 ${isLocating ? 'animate-pulse' : ''}`} />
+          </button>
+
+          {/* Önbellek Temizle */}
+          {isLoaded && (
+            <button
+              onClick={handleRetry}
+              className="p-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-red-100 dark:hover:bg-red-900/50 text-slate-600 dark:text-slate-300 hover:text-red-600 dark:hover:text-red-400 transition-all border border-transparent dark:border-white/5"
+              title="Verileri Yenile (Önbelleği Temizle)"
+            >
+              <Trash2 className="w-4 h-4" />
+            </button>
+          )}
+
+          {/* Tema */}
+          <button
+            onClick={toggleTheme}
+            className="p-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 transition-all border border-transparent dark:border-white/5"
+            title={isDark ? 'Açık Tema' : 'Koyu Tema'}
+          >
+            {isDark ? <Sun className="w-5 h-5 text-amber-400" /> : <Moon className="w-5 h-5 text-indigo-600" />}
+          </button>
+        </div>
+      </header>
+
+      {/* ─── Map Container ─── */}
+      <div className="flex-1 w-full relative z-0">
+        <div ref={mapRef} className="absolute inset-0 w-full h-full" />
+
+        {/* Filtre */}
+        {isLoaded && (
+          <MapFilter
+            activeFilter={activeFilter}
+            onFilterChange={setActiveFilter}
+            counts={counts}
+          />
+        )}
+
+        {/* Hata Durumu */}
+        {hasError && <ErrorState onRetry={handleRetry} />}
+      </div>
+
+      {/* ─── Global Popup/Tooltip Dark Mode CSS ─── */}
+      <style>{`
+        .dark .leaflet-popup-content-wrapper,
+        .dark .leaflet-popup-tip {
+          background: #1e293b;
+          color: #f8fafc;
+          border-color: #334155;
+          box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+        }
+        .dark .leaflet-tooltip {
+          background: #1e293b;
+          color: #f8fafc;
+          border-color: #334155;
+        }
+        .dark .leaflet-tooltip::before {
+          border-top-color: #1e293b;
+        }
+        .dark .leaflet-popup-content h3 {
+          color: #818cf8 !important;
+        }
+        .dark .leaflet-popup-content div {
+          color: #cbd5e1 !important;
+        }
+        .dark .leaflet-popup-close-button {
+          color: #94a3b8 !important;
+        }
+        .dark .leaflet-popup-close-button:hover {
+          color: #f8fafc !important;
+        }
+        .leaflet-popup-content-wrapper {
+          border-radius: 16px !important;
+          padding: 4px !important;
+        }
+        .leaflet-tooltip {
+          border-radius: 12px !important;
+          padding: 8px 12px !important;
+          font-size: 13px !important;
+          box-shadow: 0 4px 12px rgba(0,0,0,0.1) !important;
+        }
+        .custom-marker div:hover {
+          transform: scale(1.15) !important;
+        }
+        .user-location-marker {
+          background: none !important;
+          border: none !important;
+        }
+      `}</style>
+    </div>
+  );
+}
+
+/** knownLocations'ta var mı kontrol et (import döngüsünü önlemek için burada) */
+async function isKnown(name: string): Promise<boolean> {
+  const { knownLocations } = await import('../data/locations');
+  return name in knownLocations;
 }
